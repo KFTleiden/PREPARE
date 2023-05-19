@@ -1,0 +1,11 @@
+productionHistory
+*.sav
+md/data
+md/results
+src/data
+src/results
+md/RgenericAllRaw.R
+md/PREPAREStat.R
+md/*.Rmd
+publish.sh
+publishPrepare.sh

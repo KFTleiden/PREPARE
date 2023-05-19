@@ -1,0 +1,211 @@
+---
+title: "PREPARE Negative controls Analysis"
+author: "SB, CHvdW"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+  pdf_document:
+    toc: TRUE
+---
+
+# Description
+
+# Data
+
+```{r setup, include=FALSE}
+	knitr::opts_chunk$set(echo = FALSE)
+	Library('glmnet');
+	source('PREPAREStat.R');
+```
+
+Seed
+```{r}
+	#generateSeed()
+	mySeed = 1161383539;
+```
+
+```{r echo = T}
+	paths = resavePrepareData(preparePaths, doSave = FALSE);
+	# Patient data
+	data = readData(paths$data);
+	# Events
+	dataE = readEventData(paths$dataE);
+	# Genotypes
+	dataG = readGenotypes(pathGts = paths$dataG, pathClin = paths$data);
+	# PGx Guidelines
+	drug2gene = readActionabilityRules(paths$drug2gene);
+	# Nurse assemssments
+	dataN = readTable(paths$dataN);
+```
+
+```{r echo = T}
+ 	idsActionable = ComputeActionability(dataG, drug2gene);
+	dataFu = dataAnalysisComputeFollowUp(dataN);
+	idsFu = dataFu$STUDYCODE[ nif(dataFu$followup >= 3) ]
+	#idsIncludedBaseline = data$STUDYCODE[
+	#	data$ELIGIBLE == 'Yes' & !nif(as.integer(data$WITHDRAWREASON) == 1) ]
+	idsIncludedBaseline = data$STUDYCODE;
+```
+
+## Data set Negative controls
+
+```{r echo = T}
+	evs2 = eventFunnelFull(dataE, data, dataG, drug2gene, Drugs, CodeTrans);
+	idsCasesNC = setdiff(evs2$STUDYCODE, idsActionable);
+
+	idsControlsNC0 = idsControlsFromPosNeg(data, list(idsFu, idsIncludedBaseline), idsCasesNC);
+	idsControlsNC = setdiff(idsControlsNC0, idsActionable)
+```
+
+
+```{r}
+	dataNCprim = dataForCasesControls(data, idsCasesNC, idsControlsNC, 'outcomePrimNC',
+		pathEQ5D = paths$pathEQ5D, pathNaller = paths$pathNaller, pathCOME = paths$pathCOME);
+	dataWdrugs = computeDrugColumns(dataNCprim);
+	dataNC = dataWdrugsPer = computePeriod(dataWdrugs$data);
+```
+
+## Negative controls, case-mix correction using penalized regression
+
+```{r}
+	f1 = outcomePrimNC ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + COUNTRY:CENTER + period + STUDYARMC:COUNTRY;
+	f1Drugs = formula.add.rhs(f1, paste('COUNTRY*', dataWdrugs$drugs, sep = ''));
+	mm = model_matrix_from_formula(f1Drugs, dataNC);
+	set.seed(mySeed);
+	rDrugPer = cv.glmnet(mm$mm, mm$response, family = 'binomial', nfolds = 20, alpha = .2);
+```
+
+All coefficients
+
+```{r results = 'asis'}
+	cfs = coefficients(rDrugPer)
+	CatKableDf(as.matrix(cfs[!duplicated(row.names(cfs)), , drop = F]))
+```
+
+Non-zero coefficients
+
+```{r results = 'asis'}
+	cfs = Df_(as.matrix(cfs[!duplicated(row.names(cfs)), , drop = F]));
+	CatKableDf(cfs[ cfs[, 1] != 0, , drop = F])
+```
+
+### Refit the model
+
+The model is refitted using a standard logistic regression, treating the elastic net model as a model selection step.
+
+```{r}
+	# refit
+	ns = names(which(coefficients(rDrugPer)[, 1] != 0));
+	d0 = Df_(cbind(mm$response, mm$mm[, ns]), min_ = 'X.Intercept.', headerMap = list(V1 = 'outcome'));
+	r0 = glm(outcome ~ ., d0, family = 'binomial');
+	print(summary(r0))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficients(summary(r0)))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(r0, doExp = F))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(r0, doExp = T))
+```
+
+
+# Primary analysis, case-mix correction using penalized regression
+
+```{r}
+	evsPrimary = eventFunnelFullA(dataE, data, dataG, drug2gene, NULL, CodeTrans);
+	if (length(evsPrimary$STUDYCODE) != length(unique(evsPrimary$STUDYCODE))) {
+		stop('Events not unique');
+	}
+	idsCases = evsPrimary$STUDYCODE;
+	idsControl = idsControlsFromPosNeg(data, list(idsFu, idsIncludedBaseline, idsActionable), idsCases);
+	dataPrim0 = dataForCasesControls(data, idsCases, idsControl, 'outcomePrim',
+		pathEQ5D = paths$pathEQ5D, pathNaller = paths$pathNaller, pathCOME = paths$pathCOME);
+	dataWdrugs = computeDrugColumns(dataPrim0);
+	dataPrim = dataWdrugsPer = computePeriod(dataWdrugs$data);
+```
+
+```{r}
+	f1Pen = outcomePrim ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + COUNTRY:CENTER + period;
+	f1DrugPenalized = formula.add.rhs(f1Pen, paste('COUNTRY*', dataWdrugs$drugs, sep = ''));
+	mm = model_matrix_from_formula(f1DrugPenalized, dataPrim);
+	set.seed(mySeed + 1);
+	#rPrimPen = cv.glmnet(mm$mm, mm$response, family = 'binomial', nfolds = 20, alpha = .2);
+	rPrimPen = cv.glmnet(mm$mm, mm$response, family = 'binomial', nfolds = 20, alpha = .25);
+```
+
+All coefficients
+
+```{r results = 'asis'}
+	cfs = coefficients(rPrimPen)
+	CatKableDf(as.matrix(cfs[!duplicated(row.names(cfs)), , drop = F]))
+```
+
+Non-zero coefficients
+
+```{r results = 'asis'}
+	cfs = Df_(as.matrix(cfs[!duplicated(row.names(cfs)), , drop = F]));
+	CatKableDf(cfs[ cfs[, 1] != 0, , drop = F])
+```
+
+Refit
+```{r}
+	ns = names(which(coefficients(rPrimPen)[, 1] != 0));
+	d0 = Df_(cbind(mm$response, mm$mm[, ns]), min_ = 'X.Intercept.', headerMap = list(V1 = 'outcome'));
+	r0 = glm(outcome ~ ., d0, family = 'binomial');
+	print(summary(r0))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficients(summary(r0)))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(r0, doExp = F))
+```
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(r0, doExp = T))
+```
+
+
+# Negative control, case-mix correction using offset
+
+Case-mix is defined by the drug-distributions across centers and across study arms within centers. The case-mix is corrected for by a two-stage process. First, drug-effects are estimated by a stratified analysis. In a logistic model, the intercept of the model characterizes the drug-related probability for a side-effect. This intercept is used as an offset in the ensuing analysis to correct for a drug effect.
+
+```{r}
+	f1Red = outcomePrimNC ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY;
+
+	drugEffects = by(dataNCprim, dataNCprim$INDDRUG1, function(d) {
+		#print(dim(d));
+		N = dim(d)[1];
+		rPrimNC = try(glm(f1Red, data = d, family = binomial()), silent = TRUE);
+		if (any(class(rPrimNC) == 'try-error')) return(c(N, NA));
+		return(c(N, coefficients(summary(rPrimNC))['(Intercept)', 'Estimate']));
+	});
+	drugEff = do.call(rbind, drugEffects);
+	drugEff[is.na(drugEff[, 2]), 2] = 0;
+	off = drugEff[which.indeces(dataNCprim$INDDRUG1, row.names(drugEff), ret.na = TRUE), 2];
+	off[is.na(off)] = 0
+```
+
+The following analysis repeats the negativ control analysis, except that an offset is used for each patient to correct for the effect of the index drug. For a single patient, where no index drug is specified, the effect is set to zero. For drugs, where the model could not be fitted, the effect is also set to zero.
+
+```{r}
+	f1 = outcomePrimNC ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + (1|COUNTRY:CENTER);
+	rPrimNCcm = glmer(f1, family = binomial(), data = dataNCprim, glmerControl(optimizer = 'bobyqa', boundary.tol = 0, tol = 1e-3, optCtrl = list(maxfun = 1e5)), offset = off);
+	print(summary(rPrimNCcm));
+```
+
+
+# Session info
+
+```{r}
+	sessionInfo()
+```

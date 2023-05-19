@@ -1,0 +1,205 @@
+---
+title: "PREPARE Primary Analysis"
+author: "SB"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+  pdf_document:
+    toc: TRUE
+---
+
+# Data
+
+```{r setup, include=FALSE}
+	knitr::opts_chunk$set(echo = FALSE)
+	source('PREPAREStat.R');
+```
+
+## Raw Data
+
+```{r echo = T}
+	paths = resavePrepareData(preparePaths, doSave = FALSE);
+	# Patient data
+	data = readData(paths$data);
+	# Events
+	dataE = readEventData(paths$dataE);
+	# Genotypes
+	dataG = readGenotypes(pathGts = paths$dataG, pathClin = paths$data);
+	# PGx Guidelines
+	drug2gene = readActionabilityRules(paths$drug2gene);
+	# Nurse assemssments
+	dataN = readTable(paths$dataN);
+```
+
+## Pre-computations
+
+```{r}
+ 	idsActionable = ComputeActionability(dataG, drug2gene);
+	dataFu = dataAnalysisComputeFollowUp(dataN);
+	idsFu = dataFu$STUDYCODE[ nif(dataFu$followup >= 3) ]
+	idsIncludedBaseline = data$STUDYCODE;
+```
+
+# Primary Analysis (gatekeeper 1; actionables)
+
+## Cases/Controls
+
+```{r}
+	evsPrimary = eventFunnelFull(dataE, data, dataG, drug2gene, NULL, CodeTrans);
+	if (length(evsPrimary$STUDYCODE) != length(unique(evsPrimary$STUDYCODE))) {
+		stop('Events not unique');
+	}
+	idsCases = intersect(evsPrimary$STUDYCODE, idsActionable);
+	idsControl = idsControlsFromPosNeg(data, list(idsFu, idsIncludedBaseline, idsActionable), idsCases);
+```
+
+## Full data set
+
+```{r}
+	dataPrim = dataForCasesControls(data, idsCases, idsControl, 'outcomePrim',
+		pathEQ5D = paths$pathEQ5D, pathNaller = paths$pathNaller, pathCOME = paths$pathCOME);
+```
+
+## Regression model (gatekeeper 1)
+
+Analyze actionable patients.
+
+### Descriptives
+
+```{r results = 'asis'}
+	cat(Kable(Df(sampleTable(dataPrim, 'outcomePrim', 'STUDYARMC'))))
+```
+
+### Random effects model
+
+```{r}
+	# control arm is reference level
+	f1 = outcomePrim ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + (1|COUNTRY:CENTER)
+	rPrim = glmer(f1, family = binomial(), data = dataPrim, glmerControl(optimizer = 'bobyqa', boundary.tol = 0, tol = 1e-3, optCtrl = list(maxfun = 1e5)));
+	print(summary(rPrim));
+```
+
+Regression Table log-odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrim, doExp = F))
+```
+
+Regression Table odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrim, doExp = T))
+```
+
+# Primary analysis: Gatekeeper 2
+
+Analyze all patients (irrespective of actionability status).
+
+## Cases/Controls
+
+```{r}
+	idsCasesG2 = evsPrimary$STUDYCODE;
+	idsControlsG2 = idsControlsFromPosNeg(data, list(idsFu, idsIncludedBaseline), idsCasesG2);
+```
+
+## Data set
+
+```{r}
+	dataG2Prim = dataForCasesControls(data, idsCasesG2, idsControlsG2, 'outcomePrimG2',
+		pathEQ5D = paths$pathEQ5D, pathNaller = paths$pathNaller, pathCOME = paths$pathCOME);
+```
+
+### Descriptives
+
+```{r results = 'asis'}
+	cat(Kable(Df(sampleTable(dataG2Prim, 'outcomePrimG2', 'STUDYARMC'))))
+```
+
+Number of patients overlapping with primary analysis
+
+```{r}
+	print(length(intersect(dataPrim$STUDYCODE, dataG2Prim$STUDYCODE)))
+```
+
+## Random effects model
+
+```{r}
+	f1 = outcomePrimG2 ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + (1|COUNTRY:CENTER);
+	print(missingness(dataG2Prim, f1))
+
+	rPrimG2 = glmer(f1, family = binomial(), data = dataG2Prim, glmerControl(optimizer = 'bobyqa', boundary.tol = 0, tol = 1e-3, optCtrl = list(maxfun = 1e5)));
+	print(summary(rPrimG2));
+```
+
+Regression Table log-odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrimG2, doExp = F))
+```
+
+Regression Table odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrimG2, doExp = T))
+```
+
+# Negative controls
+
+Analyze non-actionable patients.
+
+### Cases/Controls
+
+```{r}
+	idsCasesNC = setdiff(evsPrimary$STUDYCODE, idsActionable);
+	idsControlsNC0 = idsControlsFromPosNeg(data, list(idsFu, idsIncludedBaseline), idsCasesNC);
+	idsControlsNC = setdiff(idsControlsNC0, idsActionable)
+```
+
+## Data set
+
+```{r}
+	dataNCprim = dataForCasesControls(data, idsCasesNC, idsControlsNC, 'outcomePrimNC',
+		pathEQ5D = paths$pathEQ5D, pathNaller = paths$pathNaller, pathCOME = paths$pathCOME);
+```
+
+### Descriptives
+
+```{r results = 'asis'}
+	cat(Kable(Df(sampleTable(dataNCprim, 'outcomePrimNC', 'STUDYARMC'))))
+```
+
+Number of patients overlapping with primary analysis
+
+```{r}
+	print(length(intersect(dataPrim$STUDYCODE, dataNCprim$STUDYCODE)))
+```
+
+
+## Random effects model
+
+```{r}
+	f1 = outcomePrimNC ~ AGE + EQ5D + STUDYARMC + Naller + Ncome + COUNTRY + (1|COUNTRY:CENTER);
+	rPrimNC = glmer(f1, family = binomial(), data = dataNCprim, glmerControl(optimizer = 'bobyqa', boundary.tol = 0, tol = 1e-3, optCtrl = list(maxfun = 1e5)));
+	print(summary(rPrimNC));
+```
+
+Regression Table log-odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrimNC, doExp = F))
+```
+
+Regression Table odds
+
+```{r results = 'asis'}
+	CatKableDf(coefficientsTable(rPrimNC, doExp = T))
+```
+
+
+# Session info
+
+```{r}
+	sessionInfo()
+```
